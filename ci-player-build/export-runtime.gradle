@@ -16,14 +16,16 @@ gradle.projectsEvaluated {
                         if (id.group == 'androidx.media3') {
                             throw new GradleException("Unexpected official Media3 binary mixed into custom source build: ${id}")
                         }
-                        coordinates.add("${id.group}:${id.module}:${id.version}")
+                        // TV already supplies the API-compatible patched RTMP implementation.
+                        if (!(id.group == 'io.antmedia' && id.module == 'rtmp-client')) {
+                            coordinates.add("${id.group}:${id.module}:${id.version}")
+                        }
                     }
                 }
             }
             def output = root.layout.buildDirectory.file('tv-consumer-dependencies.gradle').get().asFile
             output.parentFile.mkdirs()
-            output.text = '// Exact external runtime closure for locally built custom Media3 AARs.\ndependencies {\n' +
-                coordinates.collect { "    implementation '${it}'" }.join('\n') + '\n}\n'
+            output.text = '// External runtime closure for local custom Media3 AARs.\nconfigurations.configureEach { exclude group: \'io.antmedia\', module: \'rtmp-client\' }\ndependencies {\n' + coordinates.collect { "    implementation '${it}'" }.join('\n') + '\n}\n'
             println("Exported ${coordinates.size()} external dependencies: ${output}")
         }
     }
