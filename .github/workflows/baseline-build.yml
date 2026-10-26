@@ -1,0 +1,127 @@
+name: TV baseline build
+
+on:
+  push:
+    branches: [build/baseline-check]
+    paths:
+      - '.github/workflows/baseline-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baseline-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  baseline:
+    if: github.ref == 'refs/heads/build/baseline-check'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out test branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Prepare disposable test signing
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ci-logs
+          : "${ANDROID_HOME:?Android SDK is not available on runner}"
+          keytool -genkeypair -noprompt \
+            -keystore "$RUNNER_TEMP/baseline.jks" -storetype JKS \
+            -alias ci-baseline -storepass android -keypass android \
+            -keyalg RSA -keysize 2048 -validity 30 \
+            -dname "CN=Disposable TV CI Test"
+          printf 'sdk.dir=%s\nstoreFile=%s\nkeyAlias=ci-baseline\nstorePassword=android\n' \
+            "$ANDROID_HOME" "$RUNNER_TEMP/baseline.jks" > local.properties
+          git rev-parse HEAD > ci-logs/source-sha.txt
+          java -version 2>&1 | tee ci-logs/java.log
+          for file in app/libs/lib-mpvplayer-release.aar app/libs/lib-decoder-ffmpeg-release.aar; do
+            if [ -f "$file" ]; then
+              printf 'PRESENT %s\n' "$file"
+              sha256sum "$file"
+            else
+              printf 'MISSING %s\n' "$file"
+            fi
+          done | tee ci-logs/local-aar.log
+
+      - name: Install declared Android SDK
+        id: sdk
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$sdkmanager" ]; then
+            sdkmanager="$(command -v sdkmanager)"
+          fi
+          "$sdkmanager" 'platforms;android-37' 'build-tools;37.0.0' \
+            2>&1 | tee ci-logs/sdk-install.log
+
+      - name: Attempt original Leanback Debug build
+        id: build
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          bash ./gradlew --no-daemon --console=plain --version \
+            2>&1 | tee ci-logs/gradle-version.log
+          version_rc=${PIPESTATUS[0]}
+          bash ./gradlew --no-daemon --console=plain --stacktrace \
+            :app:assembleLeanbackDebug \
+            2>&1 | tee ci-logs/assemble.log
+          build_rc=${PIPESTATUS[0]}
+          printf 'gradle_version_exit=%s\nassemble_exit=%s\n' \
+            "$version_rc" "$build_rc" | tee ci-logs/result.txt
+          if [ "$build_rc" -ne 0 ]; then exit "$build_rc"; fi
+          if [ "$version_rc" -ne 0 ]; then exit "$version_rc"; fi
+
+      - name: Inspect generated APKs
+        if: ${{ success() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+          apks=(app/build/outputs/apk/leanback/debug/**/*.apk)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            printf 'Gradle returned success but no Leanback Debug APK was found.\n' >&2
+            exit 1
+          fi
+          for apk in "${apks[@]}"; do
+            sha256sum "$apk"
+            "$ANDROID_HOME/build-tools/37.0.0/aapt2" dump badging "$apk"
+          done | tee ci-logs/apk-info.log
+
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: baseline-logs-${{ github.run_id }}
+          path: ci-logs/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload test APKs only after successful build
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: leanback-debug-test-only-${{ github.run_id }}
+          path: app/build/outputs/apk/leanback/debug/**/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove disposable signing files
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/baseline.jks" "$GITHUB_WORKSPACE/local.properties"
