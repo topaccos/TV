@@ -1,0 +1,82 @@
+name: Same-signature runtime test suite
+on:
+  push:
+    branches: [build/baseline-check]
+    paths: ['.github/workflows/runtime-suite.yml', 'ci-runtime-build/**', 'runtime/**', 'chaquo/**', 'quickjs/**', 'nodejs/**', 'thunder/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: runtime-suite-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  suite:
+    if: github.ref == 'refs/heads/build/baseline-check'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Prepare tools and disposable suite signing
+        run: |
+          set -euo pipefail
+          mkdir -p ci-logs ci-suite
+          sudo apt-get update -qq
+          sudo apt-get install -y patchelf python3-venv
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-37.0' 'build-tools;37.0.0' 'platforms;android-36' 'cmake;3.22.1' 'ndk;30.0.16248370' 2>&1 | tee ci-logs/sdk.log
+          keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/suite.jks" -storetype JKS -alias suite-test -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 30 -dname 'CN=Disposable TV Runtime Suite'
+          printf 'sdk.dir=%s\nstoreFile=%s\nkeyAlias=suite-test\nstorePassword=android\n' "$ANDROID_HOME" "$RUNNER_TEMP/suite.jks" > local.properties
+          git rev-parse HEAD > ci-logs/source-sha.txt
+      - name: Build pinned Media dependencies
+        run: |
+          set -euo pipefail
+          bash ci-player-build/build-media.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/tv-media" 2>&1 | tee ci-logs/media.log
+      - name: Build and verify host and runtimes
+        run: |
+          set -euo pipefail
+          bash ci-runtime-build/build-suite.sh 2>&1 | tee ci-logs/suite.log
+      - name: Save error summaries
+        if: ${{ !cancelled() && failure() }}
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          for path in list(Path('ci-logs').glob('*.log')) + list(Path('ci-suite/logs').glob('*.log')):
+              lines=path.read_text(errors='replace').splitlines()
+              chosen=[]
+              for i,line in enumerate(lines):
+                  if re.search(r'error:|exception|failed|not found|could not|couldn.t|what went wrong|caused by',line,re.I):
+                      for item in lines[max(0,i-1):i+5]:
+                          if item.strip() and item.strip() not in chosen: chosen.append(item.strip())
+                      if len(chosen)>=20: break
+              if chosen:
+                  msg='\n'.join(chosen[:20])[:5000].replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+                  print('::error title='+path.name+'::'+msg)
+          PY
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-suite-logs-${{ github.run_id }}
+          path: |
+            ci-logs/
+            ci-suite/logs/
+            ci-suite/manifest.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload artifacts with validation status
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-suite-apks-${{ github.run_id }}
+          path: ci-suite/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Delete signing inputs
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/suite.jks" "$GITHUB_WORKSPACE/local.properties"
