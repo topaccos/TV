@@ -103,6 +103,35 @@ jobs:
             "$ANDROID_HOME/build-tools/37.0.0/aapt2" dump badging "$apk"
           done | tee ci-logs/apk-info.log
 
+      - name: Surface build errors in check annotations
+        if: ${{ !cancelled() && failure() }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          patterns = re.compile(r'error|exception|failed|failure|not found|could not|couldn.t|requires|what went wrong|caused by|distributionUrl|https://.*gradle', re.I)
+          def escape(value):
+              return value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          for name in ('sdk-install.log', 'gradle-version.log', 'assemble.log'):
+              path = Path('ci-logs') / name
+              if not path.exists():
+                  continue
+              lines = path.read_text(errors='replace').splitlines()
+              selected = []
+              for i, line in enumerate(lines):
+                  if patterns.search(line):
+                      for item in lines[max(0, i - 1):i + 4]:
+                          item = item.strip()
+                          if item and item not in selected:
+                              selected.append(item)
+                      if len(selected) >= 16:
+                          break
+              if not selected:
+                  selected = lines[-8:]
+              print('::error title=' + name + '::' + escape('\n'.join(selected[:16])[:5000]))
+          PY
+
       - name: Upload diagnostic logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
