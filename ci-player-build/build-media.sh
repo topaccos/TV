@@ -11,6 +11,12 @@ if [[ ! -d "$media/.git" ]]; then
     git -C "$media" fetch --depth=1 origin 3c2cbe8ac742c2fe15eff52f03eeb3b1b648848d
     git -C "$media" checkout --detach FETCH_HEAD
 fi
+# Source-only third-party compatibility patch for API used by TV but absent
+# from the published official Media checkout. Do not execute fork workflows.
+git -C "$media" fetch --depth=1 https://github.com/dlgt6/media.git 01116cae74e3b149b1c295f9a841311ac4aa6e8f
+git -C "$media" diff --binary HEAD FETCH_HEAD -- libraries > "$work/media-tv-compat.patch"
+git -C "$media" apply "$work/media-tv-compat.patch"
+printf '%s\n' 'Media compatibility source: dlgt6/media@01116cae74e3b149b1c295f9a841311ac4aa6e8f'
 python3 "$here/prepare-media.py" "$media" "$work/artifacts"
 # Vulkan is available from Android API 24, matching the TV host's minSdk.
 python3 - "$media" <<'PY'
