@@ -12,6 +12,15 @@ if [[ ! -d "$media/.git" ]]; then
     git -C "$media" checkout --detach FETCH_HEAD
 fi
 python3 "$here/prepare-media.py" "$media" "$work/artifacts"
+# Vulkan is available from Android API 24, matching the TV host's minSdk.
+python3 - "$media" <<'PY'
+import pathlib,sys
+p=pathlib.Path(sys.argv[1])/'libraries/decoder_ffmpeg/build.gradle.kts'
+s=p.read_text()
+old='defaultConfig { ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") } }'
+assert s.count(old)==1
+p.write_text(s.replace(old,'defaultConfig { minSdk = 24; ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") } }'))
+PY
 mapfile -t modules < <(python3 - "$media/move.txt" <<'PY'
 import pathlib,sys
 for name in pathlib.Path(sys.argv[1]).read_text().splitlines():
@@ -31,15 +40,16 @@ media,tv=map(pathlib.Path,sys.argv[1:])
 files=[]
 for name in (media/'move.txt').read_text().splitlines():
     if not name.strip(): continue
-    matches=list((media/'libraries').glob(f'*/build/outputs/aar/{name}'))
+    matches=list((media/'libraries').glob(f'*/build*/outputs/aar/{name}'))
     if len(matches)!=1 or matches[0].stat().st_size==0:
         raise SystemExit(f'Missing/ambiguous actual AAR: {name}: {matches}')
     files.append(matches[0])
 for source in files:
     shutil.copy2(source,tv/'app/libs'/source.name)
     print(hashlib.sha256(source.read_bytes()).hexdigest(),source.name)
-deps=media/'build/tv-consumer-dependencies.gradle'
-shutil.copy2(deps,tv/'app/tv-media-dependencies.gradle')
+matches=list(media.glob('build*/tv-consumer-dependencies.gradle'))
+if len(matches)!=1: raise SystemExit(f'Unexpected dependency export: {matches}')
+shutil.copy2(matches[0],tv/'app/tv-media-dependencies.gradle')
 app=tv/'app/build.gradle'
 text=app.read_text()
 statement="apply from: 'tv-media-dependencies.gradle'"
