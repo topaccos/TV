@@ -12,6 +12,9 @@
   public static android.net.Uri getUriForFile(android.content.Context, java.lang.String, java.io.File);
 }
 
+# MPV JNI
+-keep class is.xyz.mpv.MPVLib** { *; }
+
 # Gson
 -keep class com.google.gson.** { *; }
 

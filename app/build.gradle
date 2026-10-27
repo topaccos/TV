@@ -21,6 +21,7 @@ android {
         targetSdk libs.versions.targetSdk.get().toInteger()
         versionCode 582
         versionName "5.8.2"
+        buildConfigField 'boolean', 'RUNTIME_SUITE_TEST', providers.gradleProperty('tvRuntimeSuiteTest').getOrElse('false')
         manifestPlaceholders.runtimeCatalog = providers.gradleProperty('tvRuntimeCatalog').getOrElse('https://github.com/FongMi/Release/releases/download/module/catalog.json')
         javaCompileOptions {
             annotationProcessorOptions {
