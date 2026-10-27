@@ -65,6 +65,7 @@ public class Updater {
     }
 
     public void start(FragmentActivity activity, boolean force) {
+        if (BuildConfig.RUNTIME_SUITE_TEST) return;
         if (!force && !modulesChecked) {
             modulesChecked = true;
             Task.execute(this::checkModules);
