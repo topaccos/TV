@@ -1,0 +1,19 @@
+{
+  "fixture": "tv-runtime-local-v1",
+  "class": [{"type_id": "local", "type_name": "Local fixtures"}],
+  "list": [{
+    "vod_id": "local-1",
+    "vod_name": "Local runtime smoke",
+    "type_id": "local",
+    "vod_pic": "",
+    "vod_remarks": "Owned local fixture; no third-party requests",
+    "vod_content": "One-second PCM audio for the MPV playback handoff; replace with --media for video.",
+    "vod_play_from": "local",
+    "vod_play_url": "Smoke$local-1"
+  }],
+  "media": "/media/smoke.wav",
+  "subtitles": [
+    {"name": "Local SRT", "url": "/subtitles/smoke.srt", "format": "srt"},
+    {"name": "Local ASS", "url": "/subtitles/smoke.ass", "format": "ass"}
+  ]
+}
