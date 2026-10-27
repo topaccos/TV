@@ -1,8 +1,8 @@
 name: Same-signature runtime test suite
 on:
   push:
-    branches: [build/baseline-check]
-    paths: ['.github/workflows/runtime-suite.yml', 'ci-runtime-build/**', 'runtime/**', 'chaquo/**', 'quickjs/**', 'nodejs/**', 'thunder/**']
+    branches: [build/dual-host-20261027]
+    paths: ['.github/workflows/runtime-suite.yml', 'ci-runtime-build/**', 'ci-player-build/**', 'app/**', 'catvod/**', 'scripts/runtime_catalog.py', 'runtime/**', 'buildSrc/**', 'chaquo/**', 'quickjs/**', 'nodejs/**', 'thunder/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -11,10 +11,11 @@ concurrency:
   cancel-in-progress: true
 jobs:
   suite:
-    if: github.ref == 'refs/heads/build/baseline-check'
+    if: github.ref == 'refs/heads/build/dual-host-20261027'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
+      SUITE_HOST_FAMILIES: leanback mobile
       SUITE_MODULES: mpv python quickjs nodejs thunder bdj
       TV_BDJ_RUNTIME_DIRECTORY: bdj-runtime
     steps:
@@ -30,7 +31,7 @@ jobs:
           python-version: |
             3.10
             3.12
-      - name: Prepare tools and disposable suite signing
+      - name: Prepare build tools and disposable suite certificate
         run: |
           set -euo pipefail
           mkdir -p ci-logs ci-suite
@@ -40,21 +41,15 @@ jobs:
           keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/suite.jks" -storetype JKS -alias suite-test -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 30 -dname 'CN=Disposable TV Runtime Suite'
           printf 'sdk.dir=%s\nstoreFile=%s\nkeyAlias=suite-test\nstorePassword=android\n' "$ANDROID_HOME" "$RUNNER_TEMP/suite.jks" > local.properties
           git rev-parse HEAD > ci-logs/source-sha.txt
-          printf '\n-keep class is.xyz.mpv.MPVLib** { *; }\n' >> app/proguard-rules.pro
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib,urllib.request
-          p=Path('ci-runtime-build/verify-suite.py')
-          s=p.read_text().replace("r'^Signer #\\d+ certificate SHA-256 digest: ([0-9a-fA-F]+)'", "r'^(?:Signer #\\d+|V[0-9.]+ Signer):? certificate SHA-256 digest: ([0-9a-fA-F]+)'")
-          p.write_text(s)
-          base='https://github.com/FongMi/bdj-runtime/releases/download/zero-jdk8u482-r1/'
-          files={'j2re-zero-arm64-v8a.zip':'f147cc55cba3d2062697638655fa241e113bc691607e83983b2d00a6dcea8826','j2re-zero-armeabi-v7a.zip':'035995b29f654ab1e9d6ecc6554d20cd51f73ef4386f874bd291be6b5bf2c0ff','sources.json':'27e0759e674a3f4b6bb222b44de97a2f2caeb37dd395f0b92e4af6a5e3208d44','SOURCE-NOTICE.md':'ea8105c26867601ac7d447728e8d3e59173955eb44ba8993e9b2ce9a44a4ac89'}
-          out=Path('app/bdj-runtime');out.mkdir(exist_ok=True)
-          for name,digest in files.items():
-              data=urllib.request.urlopen(base+name,timeout=180).read()
-              if hashlib.sha256(data).hexdigest()!=digest: raise RuntimeError('BDJ hash mismatch: '+name)
-              (out/name).write_bytes(data)
-          PY
+      - name: Offline build-script regression tests
+        run: |
+          python3 ci-runtime-build/test-build-baseline.py
+          python3 ci-runtime-build/test-build-orchestration.py
+      - name: Prepare pinned BD-J host classpath and JVM (not functional acceptance)
+        run: |
+          set -euo pipefail
+          python3 ci-runtime-build/prepare-optional.py --bdj-only --repo "$GITHUB_WORKSPACE"
+          TV_BDJ_TEST_ARTIFACT="$GITHUB_WORKSPACE/app/bdj-runtime/classpath-source/libbluray-bdj-12605342235.zip" python3 ci-runtime-build/test-build-baseline.py
       - name: Build pinned Media dependencies
         run: |
           set -euo pipefail
@@ -63,7 +58,14 @@ jobs:
         run: |
           set -euo pipefail
           bash ci-runtime-build/build-suite.sh 2>&1 | tee ci-logs/suite.log
-      - name: Save error summaries
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          manifest = json.loads(Path('ci-suite/manifest.json').read_text())
+          if not manifest.get('requestedSuitePassed') or len(manifest['components']) != 16:
+              raise SystemExit('Requested dual-host/six-runtime suite is incomplete; see manifest.json')
+          PY
+      - name: Save useful error summaries
         if: ${{ !cancelled() && failure() }}
         run: |
           python3 - <<'PY'
@@ -81,7 +83,7 @@ jobs:
                   msg='\n'.join(chosen[:20])[:5000].replace('%','%25').replace('\r','%0D').replace('\n','%0A')
                   print('::error title='+path.name+'::'+msg)
           PY
-      - name: Upload diagnostics
+      - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -92,13 +94,13 @@ jobs:
             ci-suite/manifest.json
           if-no-files-found: warn
           retention-days: 7
-      - name: Upload artifacts with validation status
+      - name: Upload suite artifacts and validation status
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: runtime-suite-apks-${{ github.run_id }}
           path: ci-suite/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 7
       - name: Delete signing inputs
         if: always()
