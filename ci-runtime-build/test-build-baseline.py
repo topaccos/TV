@@ -211,6 +211,53 @@ class BdjClasspathTests(unittest.TestCase):
                 bdj_assets.verify_assets(assets.__getitem__)
 
 
+def host_ca_fixture():
+    # Test-only restoration of Git LF bytes after Windows autocrlf checkout.
+    # The production verifier hashes APK bytes without normalization.
+    data = (HERE.parent / 'app/src/main/assets/cacert.pem').read_bytes().replace(b'\r\n', b'\n')
+    if len(data) != 226168 or hashlib.sha256(data).hexdigest() != 'b6e66569cc3d438dd5abe514d0df50005d570bfc96c14dca8f768d020cb96171':
+        raise AssertionError('Host CA fixture differs from the reviewed Git blob')
+    return data
+
+
+class HostCaTests(unittest.TestCase):
+    def check_zip(self, data, path='assets/cacert.pem', component='host'):
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / 'fixture.apk'
+            with ZipFile(file, 'w') as archive:
+                archive.writestr(path, data)
+            suite.verify_zip(file, 'arm64-v8a', component)
+
+    def test_original_git_bundle_passes_without_changing_pin(self):
+        data = host_ca_fixture()
+        self.assertEqual(suite.HOST_CA_PATH, 'assets/cacert.pem')
+        self.assertEqual(suite.HOST_CA_SIZE, 226168)
+        self.assertEqual(suite.HOST_CA_SHA256, 'b6e66569cc3d438dd5abe514d0df50005d570bfc96c14dca8f768d020cb96171')
+        self.check_zip(data)
+
+    def test_changed_empty_truncated_crlf_and_private_key_rejected(self):
+        data = host_ca_fixture()
+        key = b'-----BEGIN PRIVATE KEY-----\nfixture\n-----END PRIVATE KEY-----\n'
+        variants = (data[:-1] + bytes((data[-1] ^ 1,)), b'', data[:-1],
+                    data.replace(b'\n', b'\r\n'), key, data + key,
+                    data + b'-----BEGIN CERTIFICATE-----\nextra\n-----END CERTIFICATE-----\n')
+        for value in variants:
+            with self.subTest(size=len(value)), self.assertRaisesRegex(ValueError, 'pinned host CA bundle mismatch'):
+                self.check_zip(value)
+
+    def test_correct_bundle_at_other_sensitive_paths_rejected(self):
+        for path in ('assets/other.pem', 'assets/CACERT.PEM', 'cacert.pem',
+                     'assets/cacert.key', 'assets/test.jks', 'assets/test.keystore',
+                     'assets/test.p12', 'assets/test.pfx'):
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'unexpected key/certificate'):
+                self.check_zip(host_ca_fixture(), path=path)
+
+    def test_runtime_cannot_use_host_exception(self):
+        for component in suite.MODULES:
+            with self.subTest(component=component), self.assertRaisesRegex(ValueError, 'unexpected key/certificate'):
+                self.check_zip(host_ca_fixture(), component=component)
+
+
 class SuiteMatrixTests(unittest.TestCase):
     """Exercise real ZIP paths/catalog checks; only external Android tools are simulated.
 
@@ -266,6 +313,7 @@ class SuiteMatrixTests(unittest.TestCase):
         elf = self.elf(abi)
         if component == 'host':
             return {'AndroidManifest.xml': b'compiled XML fixture', 'classes.dex': b'dex\n035\0',
+                    'assets/cacert.pem': host_ca_fixture(),
                     f'lib/{abi}/libc++_shared.so': elf}
         files = {f'lib/{abi}/{name}': elf for name in self.catalog.LIBRARIES.get(component, ())}
         if component == 'python':
@@ -378,6 +426,18 @@ class SuiteMatrixTests(unittest.TestCase):
         entries = [entry for entry in manifest['components'] if entry['abi'] == 'arm64-v8a' and entry['component'] != 'host']
         self.assertEqual(len(entries), 6)
         self.assertTrue(all(entry['status'] == 'failed' for entry in entries))
+
+    def test_tampered_host_ca_fails_same_abi_runtime_dependencies(self):
+        self.replace_payload(('host', 'mobile', 'arm64-v8a'), 'assets/cacert.pem', b'tampered')
+        code, manifest = self.run_suite()
+        self.assertEqual(code, 1)
+        self.assertFalse(manifest['requestedSuitePassed'])
+        host = next(entry for entry in manifest['components'] if entry['component'] == 'host'
+                    and entry['family'] == 'mobile' and entry['abi'] == 'arm64-v8a')
+        self.assertIn('pinned host CA bundle mismatch', host['reason'])
+        entries = [entry for entry in manifest['components'] if entry['abi'] == 'arm64-v8a' and entry['component'] != 'host']
+        self.assertEqual(len(entries), 6)
+        self.assertTrue(all(entry['status'] == 'failed' and entry['reason'] == 'Missing verified requested same-ABI host' for entry in entries))
 
     def test_missing_mobile_apk_does_not_fall_back_to_leanback(self):
         self.files[('host', 'mobile', 'armeabi-v7a')].unlink()

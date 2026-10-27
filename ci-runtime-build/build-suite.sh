@@ -125,7 +125,8 @@ for family in "${families[@]}"; do
         for abi in arm64-v8a armeabi-v7a; do record host "$family" "$abi" failed "$guard_rc" host-guard.log; done
         continue
     fi
-    if run_logged "$log" "${gradle[@]}" -p "$repo" -I "$init" -PtvRuntimeSuiteTest=true ":app:assemble${family^}Release"; then
+    # Explicit empty catalog disables upstream catalog requests for test hosts only.
+    if run_logged "$log" "${gradle[@]}" -p "$repo" -I "$init" -PtvRuntimeSuiteTest=true -PtvRuntimeCatalog= ":app:assemble${family^}Release"; then
         for abi in arm64-v8a armeabi-v7a; do
             if collect "$repo/app/build/outputs/apk/$family/release" "$family-${abi//-/_}.apk" "$out/host" >> "$out/logs/$log" 2>&1; then
                 record host "$family" "$abi" built 0 "$log"

@@ -26,6 +26,11 @@ CORE = ("host", "mpv", "python")
 MODULES = ("mpv", "python", "quickjs", "nodejs", "thunder", "bdj")
 HOST_FAMILIES = ("leanback", "mobile")
 STATUS_FIELDS = ("component", "family", "abi", "status", "exitCode", "log")
+# Repository MPV TLS trust bundle (Git blob a78e1dd471fa9d6bf21bd558d2d478dc80c79486).
+# Pin the original LF bytes; never derive trust from the APK or mutable --repo input.
+HOST_CA_PATH = "assets/cacert.pem"
+HOST_CA_SIZE = 226168
+HOST_CA_SHA256 = "b6e66569cc3d438dd5abe514d0df50005d570bfc96c14dca8f768d020cb96171"
 
 
 def requested_matrix(families, modules):
@@ -144,7 +149,7 @@ def badging(file, aapt2, log):
     return fields, native
 
 
-def verify_zip(file, abi):
+def verify_zip(file, abi, component):
     with ZipFile(file) as apk:
         names = apk.namelist()
         if len(names) != len(set(names)) or apk.testzip() is not None:
@@ -152,7 +157,11 @@ def verify_zip(file, abi):
         for name in names:
             if "\\" in name or "\x00" in name or name.startswith("/") or any(part in (".", "..") for part in name.split("/")):
                 raise ValueError(f"{file.name}: unsafe ZIP path {name}")
-            if name.lower().endswith((".jks", ".keystore", ".p12", ".pfx", ".pem", ".key")) and not name.startswith("assets/chaquopy/"):
+            if component == "host" and name == HOST_CA_PATH:
+                if (apk.getinfo(name).file_size != HOST_CA_SIZE
+                        or hashlib.sha256(apk.read(name)).hexdigest() != HOST_CA_SHA256):
+                    raise ValueError(f"{file.name}: pinned host CA bundle mismatch: {name}")
+            elif name.lower().endswith((".jks", ".keystore", ".p12", ".pfx", ".pem", ".key")) and not name.startswith("assets/chaquopy/"):
                 raise ValueError(f"{file.name}: unexpected key/certificate file {name}")
             if name.rsplit("/", 1)[-1] == "local.properties":
                 raise ValueError(f"{file.name}: local.properties must not be packaged")
@@ -170,7 +179,7 @@ def load_catalog(repo):
 def verify_artifact(file, component, abi, args, catalog, tools, logs, family="-"):
     if not file.is_file() or file.is_symlink() or file.stat().st_size == 0:
         raise ValueError(f"Missing/empty/non-regular APK: {file}")
-    verify_zip(file, abi)
+    verify_zip(file, abi, component)
     certificate = signature(file, tools["apksigner"], logs / f"{file.stem}-signature.log")
     fields, native = badging(file, tools["aapt2"], logs / f"{file.stem}-badging.log")
     package = "com.fongmi.android.tv" if component == "host" else "com.fongmi.runtime." + component

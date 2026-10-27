@@ -54,6 +54,7 @@ if project == repo:
     family = {'leanback': ':app:assembleLeanbackRelease', 'mobile': ':app:assembleMobileRelease'}
     family = next(name for name, expected in family.items() if task == expected)
     assert '-PtvRuntimeSuiteTest=true' in args
+    assert [a for a in args if a.startswith('-PtvRuntimeCatalog=')] == ['-PtvRuntimeCatalog=']
     init = Path(args[args.index('-I') + 1]).read_text(encoding='utf-8')
     assert '100027' in init and '0.1.27-test' in init
     assert "buildConfigField 'boolean', 'RUNTIME_SUITE_TEST'" in (repo / 'app/build.gradle').read_text(encoding='utf-8')
@@ -250,8 +251,14 @@ class BuildOrchestrationTests(unittest.TestCase):
         guard = (self.out / 'logs/host-guard.log').read_text(encoding='utf-8')
         self.assertIn(GUARD_MESSAGE, guard)
         for family in ('leanback', 'mobile'):
+            task = ':app:assemble' + family.title() + 'Release'
+            hosts = [event for event in gradle if event['task'] == task]
+            self.assertEqual(len(hosts), 1)
+            self.assertIn('-PtvRuntimeSuiteTest=true', hosts[0]['argv'])
+            self.assertEqual([arg for arg in hosts[0]['argv'] if arg.startswith('-PtvRuntimeCatalog=')],
+                             ['-PtvRuntimeCatalog='], 'test hosts must not use the upstream runtime catalog')
             log = (self.out / 'logs' / ('host-' + family + '.log')).read_text(encoding='utf-8')
-            self.assertIn(':app:assemble' + family.title() + 'Release', log)
+            self.assertIn(task, log)
             self.assertNotIn(GUARD_MESSAGE, log)
         self.assertEqual(self.app.read_text(encoding='utf-8').count('RUNTIME_SUITE_TEST'), 1)
         self.assertEqual(self.updater.read_text(encoding='utf-8').count('BuildConfig.RUNTIME_SUITE_TEST'), 1)
